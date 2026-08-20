@@ -211,6 +211,9 @@ mod tests {
             last_activity: None,
             preview: Vec::new(),
             preview_error: None,
+            agent_status: None,
+            agent_status_since: None,
+            agent_pane_counts: crate::model::AgentPaneCounts::default(),
         }
     }
 

@@ -1,3 +1,42 @@
+/// A Claude Code (or other agent) pane's status, as written by an external
+/// hook into the tmux pane option `@agent_status`. Ordered worst-to-best so
+/// the derived `Ord` picks the right value when folding a session's panes
+/// down to one badge: `Attention` (blocked on you) outranks `Waiting` (its
+/// turn just ended) outranks `Working` (still running).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentStatus {
+    Working,
+    Waiting,
+    Attention,
+}
+
+impl AgentStatus {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "working" => Some(Self::Working),
+            "waiting" => Some(Self::Waiting),
+            "attention" => Some(Self::Attention),
+            _ => None,
+        }
+    }
+}
+
+/// How many panes in a session sit at each agent status. Used to render a
+/// count badge (e.g. "2 waiting, 1 working") instead of collapsing a
+/// multi-agent session down to a single pane's state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentPaneCounts {
+    pub working: u32,
+    pub waiting: u32,
+    pub attention: u32,
+}
+
+impl AgentPaneCounts {
+    pub fn total(&self) -> u32 {
+        self.working + self.waiting + self.attention
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
@@ -8,6 +47,13 @@ pub struct Session {
     pub last_activity: Option<String>,
     pub preview: Vec<String>,
     pub preview_error: Option<String>,
+    /// The worst-ranked status among this session's panes, or `None` if no
+    /// pane has ever reported one.
+    pub agent_status: Option<AgentStatus>,
+    /// Unix timestamp (seconds) of the oldest pane at `agent_status`'s rank
+    /// — i.e. how long the most-neglected pane has held that status.
+    pub agent_status_since: Option<i64>,
+    pub agent_pane_counts: AgentPaneCounts,
 }
 
 #[derive(Debug)]
@@ -167,6 +213,27 @@ impl App {
     }
 }
 
+/// Reorders sessions so the ones an agent is waiting on you for lead the
+/// grid: `Attention` first, then `Waiting`, then `Working`, then sessions
+/// with no agent at all. Within a rank, the longest-waiting session (oldest
+/// `agent_status_since`) sorts first, so a neglected pane doesn't get
+/// buried under one that only just finished. Stable, so untracked sessions
+/// keep tmux's own ordering relative to each other.
+pub fn sort_sessions_by_agent_status(sessions: &mut [Session]) {
+    sessions.sort_by_key(|session| {
+        let rank = match session.agent_status {
+            Some(AgentStatus::Attention) => 3,
+            Some(AgentStatus::Waiting) => 2,
+            Some(AgentStatus::Working) => 1,
+            None => 0,
+        };
+        (
+            std::cmp::Reverse(rank),
+            session.agent_status_since.unwrap_or(i64::MAX),
+        )
+    });
+}
+
 fn fuzzy_matches(name: &str, query: &str) -> bool {
     let query = query.to_lowercase();
     if query.is_empty() {
@@ -194,7 +261,63 @@ mod tests {
             last_activity: None,
             preview: Vec::new(),
             preview_error: None,
+            agent_status: None,
+            agent_status_since: None,
+            agent_pane_counts: AgentPaneCounts::default(),
         }
+    }
+
+    fn session_with_agent_status(
+        name: &str,
+        status: Option<AgentStatus>,
+        since: Option<i64>,
+    ) -> Session {
+        Session {
+            agent_status: status,
+            agent_status_since: since,
+            ..session(name)
+        }
+    }
+
+    #[test]
+    fn agent_sort_puts_attention_before_waiting_before_working_before_none() {
+        let mut sessions = vec![
+            session_with_agent_status("idle", None, None),
+            session_with_agent_status("working", Some(AgentStatus::Working), Some(1)),
+            session_with_agent_status("attention", Some(AgentStatus::Attention), Some(1)),
+            session_with_agent_status("waiting", Some(AgentStatus::Waiting), Some(1)),
+        ];
+
+        sort_sessions_by_agent_status(&mut sessions);
+
+        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["attention", "waiting", "working", "idle"]);
+    }
+
+    #[test]
+    fn agent_sort_breaks_ties_by_oldest_timestamp_first() {
+        let mut sessions = vec![
+            session_with_agent_status("just-now", Some(AgentStatus::Waiting), Some(500)),
+            session_with_agent_status("neglected", Some(AgentStatus::Waiting), Some(100)),
+        ];
+
+        sort_sessions_by_agent_status(&mut sessions);
+
+        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["neglected", "just-now"]);
+    }
+
+    #[test]
+    fn agent_sort_is_stable_for_sessions_with_no_agent() {
+        let mut sessions = vec![
+            session_with_agent_status("zeta", None, None),
+            session_with_agent_status("alpha", None, None),
+        ];
+
+        sort_sessions_by_agent_status(&mut sessions);
+
+        let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["zeta", "alpha"]);
     }
 
     #[test]

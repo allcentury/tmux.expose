@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 
-use crate::model::{App, Session};
+use crate::model::{AgentStatus, App, Session};
 
 pub const MIN_CARD_WIDTH: u16 = 32;
 pub const MIN_CARD_HEIGHT: u16 = 10;
@@ -22,6 +22,12 @@ pub struct CardColors {
     pub attached: Color,
     /// Every other card (title only; the border stays dimmed).
     pub inactive: Color,
+    /// A session with a pane blocked on you (e.g. a permission prompt).
+    pub attention: Color,
+    /// A session where an agent's turn just ended — it's idle on you.
+    pub waiting: Color,
+    /// A session with an agent still actively running.
+    pub working: Color,
 }
 
 impl Default for CardColors {
@@ -30,8 +36,100 @@ impl Default for CardColors {
             selected: Color::Yellow,
             attached: Color::Green,
             inactive: Color::White,
+            attention: Color::Rgb(255, 85, 85),
+            waiting: Color::Rgb(255, 184, 108),
+            working: Color::Rgb(139, 233, 253),
         }
     }
+}
+
+fn agent_status_color(status: AgentStatus, colors: CardColors) -> Color {
+    match status {
+        AgentStatus::Attention => colors.attention,
+        AgentStatus::Waiting => colors.waiting,
+        AgentStatus::Working => colors.working,
+    }
+}
+
+fn agent_status_icon(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Attention => "‼",
+        AgentStatus::Waiting => "⏳",
+        AgentStatus::Working => "⚙",
+    }
+}
+
+fn agent_status_word(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Attention => "needs you",
+        AgentStatus::Waiting => "awaiting reply",
+        AgentStatus::Working => "working",
+    }
+}
+
+fn agent_status_count(status: AgentStatus, counts: crate::model::AgentPaneCounts) -> u32 {
+    match status {
+        AgentStatus::Attention => counts.attention,
+        AgentStatus::Waiting => counts.waiting,
+        AgentStatus::Working => counts.working,
+    }
+}
+
+/// The bottom-border badge text for a session's agent status. A glyph alone
+/// (or a bare count like "⏳2") is a gamble — it depends on the terminal
+/// font rendering that character, and tells you nothing if it doesn't. So
+/// the status that actually matters — whichever one is worst, since that's
+/// what set the card's color and sort position — always gets spelled out
+/// in words. Other statuses present on other panes stay compact (e.g.
+/// "‼ needs you · ⏳2 · ⚙1") since they're supporting context, not the
+/// thing you need to read at a glance.
+fn agent_status_label(session: &Session) -> Option<String> {
+    let counts = session.agent_pane_counts;
+    let worst = session.agent_status?;
+    if counts.total() == 0 {
+        return None;
+    }
+
+    let worst_count = agent_status_count(worst, counts);
+    let worst_label = if worst_count > 1 {
+        format!(
+            "{}{} {}",
+            agent_status_icon(worst),
+            worst_count,
+            agent_status_word(worst)
+        )
+    } else {
+        format!("{} {}", agent_status_icon(worst), agent_status_word(worst))
+    };
+
+    if counts.total() == 1 {
+        return Some(worst_label);
+    }
+
+    let mut parts = vec![worst_label];
+    for status in [
+        AgentStatus::Attention,
+        AgentStatus::Waiting,
+        AgentStatus::Working,
+    ] {
+        if status == worst {
+            continue;
+        }
+        let count = agent_status_count(status, counts);
+        if count > 0 {
+            parts.push(format!("{}{}", agent_status_icon(status), count));
+        }
+    }
+    Some(parts.join(" · "))
+}
+
+fn agent_status_span(session: &Session, colors: CardColors) -> Option<Span<'static>> {
+    let label = agent_status_label(session)?;
+    let color = agent_status_color(session.agent_status?, colors);
+    Some(Span::styled(
+        format!(" {label} "),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,19 +223,28 @@ pub fn render_card(
         " {} ",
         truncate(&session.name, area.width.saturating_sub(12) as usize)
     );
+    let mut bottom_spans = vec![session_status_span(session.attached)];
+    if let Some(badge) = agent_status_span(session, colors) {
+        bottom_spans.push(badge);
+    }
     let block = Block::default()
         .title(Span::styled(
             title,
             card_title_style(selected, current_attached, colors),
         ))
-        .title_bottom(session_status_span(session.attached))
+        .title_bottom(Line::from(bottom_spans))
         .borders(Borders::ALL)
         .border_type(if selected {
             BorderType::Double
         } else {
             BorderType::Plain
         })
-        .border_style(card_border_style(selected, current_attached, colors));
+        .border_style(card_border_style(
+            selected,
+            current_attached,
+            session.agent_status,
+            colors,
+        ));
 
     let preview_height = area.height.saturating_sub(5) as usize;
     let mut lines = Vec::new();
@@ -194,13 +301,20 @@ fn card_title_style(selected: bool, current_attached: bool, colors: CardColors) 
     }
 }
 
-fn card_border_style(selected: bool, current_attached: bool, colors: CardColors) -> Style {
+fn card_border_style(
+    selected: bool,
+    current_attached: bool,
+    agent_status: Option<AgentStatus>,
+    colors: CardColors,
+) -> Style {
     if selected {
         Style::default()
             .fg(colors.selected)
             .add_modifier(Modifier::BOLD)
     } else if current_attached {
         Style::default().fg(colors.attached)
+    } else if let Some(status) = agent_status {
+        Style::default().fg(agent_status_color(status, colors))
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -690,7 +804,7 @@ mod tests {
 
     #[test]
     fn current_attached_session_border_is_green_when_not_selected() {
-        let style = card_border_style(false, true, CardColors::default());
+        let style = card_border_style(false, true, None, CardColors::default());
 
         assert_eq!(style.fg, Some(Color::Green));
         assert!(!style.add_modifier.contains(Modifier::BOLD));
@@ -698,7 +812,7 @@ mod tests {
 
     #[test]
     fn selected_session_border_stays_yellow_and_bold() {
-        let style = card_border_style(true, true, CardColors::default());
+        let style = card_border_style(true, true, None, CardColors::default());
 
         assert_eq!(style.fg, Some(Color::Yellow));
         assert!(style.add_modifier.contains(Modifier::BOLD));
@@ -710,6 +824,9 @@ mod tests {
             selected: Color::Magenta,
             attached: Color::Blue,
             inactive: Color::Cyan,
+            attention: Color::Red,
+            waiting: Color::LightYellow,
+            working: Color::LightCyan,
         };
 
         assert_eq!(
@@ -717,17 +834,123 @@ mod tests {
             Some(Color::Magenta)
         );
         assert_eq!(
-            card_border_style(true, false, colors).fg,
+            card_border_style(true, false, None, colors).fg,
             Some(Color::Magenta)
         );
         assert_eq!(card_title_style(false, true, colors).fg, Some(Color::Blue));
-        assert_eq!(card_border_style(false, true, colors).fg, Some(Color::Blue));
-        assert_eq!(card_title_style(false, false, colors).fg, Some(Color::Cyan));
-        // Unselected border stays dimmed regardless of the configured color.
         assert_eq!(
-            card_border_style(false, false, colors).fg,
+            card_border_style(false, true, None, colors).fg,
+            Some(Color::Blue)
+        );
+        assert_eq!(card_title_style(false, false, colors).fg, Some(Color::Cyan));
+        // Unselected, unattached, no-agent border stays dimmed regardless of
+        // the configured color.
+        assert_eq!(
+            card_border_style(false, false, None, colors).fg,
             Some(Color::DarkGray)
         );
+    }
+
+    #[test]
+    fn agent_status_colors_take_priority_over_dimmed_default_border() {
+        let colors = CardColors::default();
+
+        assert_eq!(
+            card_border_style(false, false, Some(AgentStatus::Attention), colors).fg,
+            Some(colors.attention)
+        );
+        assert_eq!(
+            card_border_style(false, false, Some(AgentStatus::Waiting), colors).fg,
+            Some(colors.waiting)
+        );
+        assert_eq!(
+            card_border_style(false, false, Some(AgentStatus::Working), colors).fg,
+            Some(colors.working)
+        );
+    }
+
+    #[test]
+    fn selection_and_attachment_still_outrank_agent_status_color() {
+        let colors = CardColors::default();
+
+        assert_eq!(
+            card_border_style(true, false, Some(AgentStatus::Attention), colors).fg,
+            Some(colors.selected)
+        );
+        assert_eq!(
+            card_border_style(false, true, Some(AgentStatus::Attention), colors).fg,
+            Some(colors.attached)
+        );
+    }
+
+    #[test]
+    fn single_pane_agent_status_renders_a_plain_label() {
+        let mut session = test_session("dev");
+        session.agent_status = Some(AgentStatus::Waiting);
+        session.agent_pane_counts = crate::model::AgentPaneCounts {
+            waiting: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            agent_status_label(&session),
+            Some("⏳ awaiting reply".to_string())
+        );
+    }
+
+    #[test]
+    fn multi_pane_agent_status_spells_out_the_worst_status_and_counts_the_rest() {
+        let mut session = test_session("dev");
+        session.agent_status = Some(AgentStatus::Attention);
+        session.agent_pane_counts = crate::model::AgentPaneCounts {
+            working: 1,
+            waiting: 2,
+            attention: 1,
+        };
+
+        assert_eq!(
+            agent_status_label(&session),
+            Some("‼ needs you · ⏳2 · ⚙1".to_string())
+        );
+    }
+
+    #[test]
+    fn multi_pane_agent_status_shows_a_count_on_the_worst_status_too_when_it_has_more_than_one() {
+        let mut session = test_session("dev");
+        session.agent_status = Some(AgentStatus::Attention);
+        session.agent_pane_counts = crate::model::AgentPaneCounts {
+            working: 0,
+            waiting: 1,
+            attention: 2,
+        };
+
+        assert_eq!(
+            agent_status_label(&session),
+            Some("‼2 needs you · ⏳1".to_string())
+        );
+    }
+
+    #[test]
+    fn no_agent_pane_status_renders_no_label() {
+        let session = test_session("dev");
+
+        assert_eq!(agent_status_label(&session), None);
+    }
+
+    fn test_session(name: &str) -> Session {
+        Session {
+            id: format!("${name}"),
+            name: name.to_string(),
+            attached: false,
+            window_count: 1,
+            current_window: None,
+            last_activity: None,
+            preview: Vec::new(),
+            preview_error: None,
+            agent_status: None,
+            agent_status_since: None,
+            agent_pane_counts: crate::model::AgentPaneCounts::default(),
+        }
     }
 
     #[test]

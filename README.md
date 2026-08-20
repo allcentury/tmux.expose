@@ -125,6 +125,118 @@ The same colors are also available as CLI flags when running the binary directly
 tmux-expose --selected-color '#bd93f9' --attached-color '#50fa7b' --inactive-color '#6272a4'
 ```
 
+### Agent status (Claude Code, and other agents)
+
+If you run coding agents inside tmux panes, tmux.expose can sort and badge sessions by
+whether an agent in them is waiting on you — instead of showing every session in the same
+flat, alphabetical order regardless of what's actually going on inside it.
+
+This works on **any agent that can run a shell command on state changes**. No config is
+required to make tmux.expose display it — the moment something writes the tmux pane
+options below, the grid picks it up on its next refresh:
+
+| tmux pane option | Meaning |
+|---|---|
+| `@agent_status` | `working`, `waiting`, or `attention` |
+| `@agent_status_since` | Unix timestamp of when that status started |
+
+`working` means the agent is actively running. `waiting` means its turn just ended and
+it's idle on you. `attention` means it's blocked on something stronger, like a permission
+prompt. A session's card takes the *worst* status across all of its panes (`attention` >
+`waiting` > `working`), so a multi-agent session never hides a stuck pane behind a busy
+one — and by default, sessions with a waiting or blocked agent sort to the top of the
+grid, oldest-waiting first.
+
+A single tracked pane gets a plain label on the card's bottom border:
+
+```
+⏳ awaiting reply
+```
+
+A session with more than one agent pane always spells out its *worst* status in words —
+that's the one setting the card's color and sort position, so it's the one thing you need
+to read at a glance — and shows the rest as compact counts:
+
+```
+‼ needs you · ⏳2 · ⚙1
+```
+
+(Words instead of a bare glyph+count everywhere is deliberate: emoji rendering varies by
+terminal font, so a symbol that fails to render is silent for the status that matters
+most.)
+
+The binary ships a one-shot helper for setting these, so nothing but `tmux-expose` itself
+needs to be on `PATH`:
+
+```bash
+tmux-expose agent-status working    # agent just started a turn
+tmux-expose agent-status waiting    # agent's turn ended, idle on you
+tmux-expose agent-status attention  # agent is blocked (e.g. needs a permission)
+tmux-expose agent-status clear      # agent/session is done — remove the marker
+```
+
+It reads `$TMUX_PANE` to know which pane to tag and no-ops outside tmux, so it's safe to
+wire into any hook without guarding it yourself.
+
+#### Claude Code setup
+
+Add this to `~/.claude/settings.json` (global — applies to every project) or a project's
+own `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "tmux-expose agent-status working" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "tmux-expose agent-status waiting" }] }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "tmux-expose agent-status attention" }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "tmux-expose agent-status clear" }]
+      }
+    ]
+  }
+}
+```
+
+If you already have a `hooks` block, merge these events into it rather than replacing it.
+Restart (or start a new) Claude Code session afterwards — hooks are read once at session
+start, so a session already running won't pick up an edit to `settings.json`.
+
+Other agents work the same way: run `tmux-expose agent-status <word>` from whatever hook,
+lifecycle script, or wrapper that agent exposes.
+
+#### Card colors and sort order
+
+Sensible defaults ship with the binary, so none of this is required — only set it to
+match your theme or to opt out of the sort:
+
+| Option | Highlights | Default |
+|---|---|---|
+| `@tmux-expose-attention-color` | A session with a pane blocked on you | `#ff5555` |
+| `@tmux-expose-waiting-color` | A session where an agent's turn just ended | `#ffb86c` |
+| `@tmux-expose-working-color` | A session with an agent still running | `#8be9fd` |
+| `@tmux-expose-agent-sort` | Set to `off` to keep tmux's own session order instead | `on` |
+
+```tmux
+set -g @tmux-expose-attention-color '#ff5555'
+set -g @tmux-expose-waiting-color '#ffb86c'
+set -g @tmux-expose-working-color '#8be9fd'
+set -g @tmux-expose-agent-sort 'on'
+```
+
+Also available as CLI flags: `--attention-color`, `--waiting-color`, `--working-color`,
+`--no-agent-sort`.
+
 ### Vim navigation
 
 Set `@tmux-expose-vim-keys 'on'` (or run `tmux-expose --vim`) to switch the picker to modal
