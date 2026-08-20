@@ -94,8 +94,13 @@ fn handle_default_key(app: &mut App, key: KeyEvent, columns: usize) {
 }
 
 /// Vim NORMAL mode: hjkl (and arrows) move the selection, `/` enters search.
+/// An applied-but-not-editing filter (see `App::stop_editing_search`) is
+/// still active here — Esc clears that filter before it falls back to
+/// quitting, so a filtered browse needs two Escs to close, same as `q`
+/// always does in one.
 fn handle_vim_normal_key(app: &mut App, key: KeyEvent, columns: usize) {
     match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) if app.search_text().is_some() => app.clear_search(),
         (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => app.should_quit = true,
         (KeyCode::Enter, _) => app.should_switch = true,
         (KeyCode::Char('/'), KeyModifiers::NONE) => app.start_search(),
@@ -151,8 +156,13 @@ fn is_typeable_filter_key(key: KeyEvent) -> bool {
 
 fn handle_search_key(app: &mut App, key: KeyEvent, columns: usize) {
     match (key.code, key.modifiers) {
-        // In vim mode, Esc always returns to NORMAL rather than quitting.
-        (KeyCode::Esc, _) if app.vim_keys => app.clear_search(),
+        // Vim mode: Esc on an empty query cancels (nothing to keep); Esc on
+        // a typed query commits it as a filter and drops into NORMAL mode —
+        // hjkl then browses the filtered results instead of typing into it.
+        (KeyCode::Esc, _) if app.vim_keys && app.search_text().is_some_and(str::is_empty) => {
+            app.clear_search();
+        }
+        (KeyCode::Esc, _) if app.vim_keys => app.stop_editing_search(),
         (KeyCode::Esc, _) if app.search_text().is_some_and(str::is_empty) => app.should_quit = true,
         (KeyCode::Esc, _) => app.clear_search(),
         (KeyCode::Enter, _) => app.should_switch = true,
@@ -306,6 +316,94 @@ mod tests {
 
         assert!(!app.is_searching());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn vim_esc_on_typed_query_keeps_it_as_a_filter() {
+        // The actual bug this exists to pin: Esc used to discard the query
+        // outright. It should commit it instead, Telescope-style, so hjkl
+        // can browse the filtered results afterward.
+        let mut app = vim_app(&["backend", "database", "notes"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Char('d')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1);
+
+        assert!(!app.is_searching());
+        assert_eq!(app.search_text(), Some("d"));
+        assert_eq!(app.visible_session_count(), 2); // backend, database (not notes)
+    }
+
+    #[test]
+    fn vim_hjkl_navigates_a_filter_committed_by_esc() {
+        let mut app = vim_app(&["backend", "database", "notes"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Char('d')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1);
+        assert_eq!(app.selected_session().unwrap().name, "backend");
+
+        // If Esc failed to leave text-entry, 'j' would filter instead of moving.
+        handle_key(&mut app, key(KeyCode::Char('j')), 1);
+
+        assert_eq!(app.search_text(), Some("d"));
+        assert_eq!(app.selected_session().unwrap().name, "database");
+    }
+
+    #[test]
+    fn vim_esc_on_empty_query_cancels_instead_of_committing() {
+        let mut app = vim_app(&["one", "two"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1);
+
+        assert!(!app.is_searching());
+        assert_eq!(app.search_text(), None);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn vim_esc_on_committed_filter_clears_it_before_quitting() {
+        let mut app = vim_app(&["backend", "frontend"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Char('f')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1); // commit filter, -> NORMAL
+
+        handle_key(&mut app, key(KeyCode::Esc), 1); // first NORMAL Esc: clear filter
+        assert_eq!(app.search_text(), None);
+        assert!(!app.should_quit);
+        assert_eq!(app.visible_session_count(), 2);
+
+        handle_key(&mut app, key(KeyCode::Esc), 1); // second: no filter left, quits
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn vim_q_quits_immediately_even_with_a_committed_filter() {
+        let mut app = vim_app(&["backend", "frontend"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Char('f')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1); // commit filter, -> NORMAL
+
+        handle_key(&mut app, key(KeyCode::Char('q')), 1);
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn vim_slash_after_committed_filter_starts_a_fresh_search() {
+        let mut app = vim_app(&["backend", "frontend"]);
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+        handle_key(&mut app, key(KeyCode::Char('f')), 1);
+        handle_key(&mut app, key(KeyCode::Esc), 1); // commit filter, -> NORMAL
+
+        handle_key(&mut app, key(KeyCode::Char('/')), 1);
+
+        assert!(app.is_searching());
+        assert_eq!(app.search_text(), Some(""));
     }
 
     #[test]
