@@ -1,8 +1,8 @@
 /// A Claude Code (or other agent) pane's status, as written by an external
-/// hook into the tmux pane option `@agent_status`. Ordered worst-to-best so
-/// the derived `Ord` picks the right value when folding a session's panes
-/// down to one badge: `Attention` (blocked on you) outranks `Waiting` (its
-/// turn just ended) outranks `Working` (still running).
+/// hook into the tmux pane option `@agent_status`. Ordered least-to-most
+/// severe so the derived `Ord` can be used to pick the worst value when
+/// folding a session's panes down to one badge: `Attention` (blocked on
+/// you) outranks `Waiting` (its turn just ended) outranks `Working` (still running).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AgentStatus {
     Working,
