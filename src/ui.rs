@@ -82,7 +82,11 @@ pub fn render(
         );
     }
 
-    let footer = Paragraph::new(footer_hint_line(app.search_text(), app.vim_keys));
+    let footer = Paragraph::new(footer_hint_line(
+        app.search_text(),
+        app.vim_keys,
+        app.is_searching(),
+    ));
     frame.render_widget(footer, chunks[1]);
 }
 
@@ -219,10 +223,11 @@ fn session_status_span(attached: bool) -> Span<'static> {
     }
 }
 
-fn footer_hint_line(search_query: Option<&str>, vim_keys: bool) -> Line<'static> {
-    match (vim_keys, search_query) {
-        // Vim SEARCH mode: typing filters, Esc returns to NORMAL.
-        (true, Some(query)) => Line::from(vec![
+fn footer_hint_line(search_query: Option<&str>, vim_keys: bool, editing: bool) -> Line<'static> {
+    match (vim_keys, editing, search_query) {
+        // Vim SEARCH mode: typing filters; Esc commits it as a filter and
+        // drops into NORMAL mode instead of discarding it.
+        (true, true, Some(query)) => Line::from(vec![
             Span::styled(format!("Search: {query}"), Style::default().fg(Color::Cyan)),
             hint_text(" · type to filter · "),
             hint_key("Backspace"),
@@ -230,10 +235,27 @@ fn footer_hint_line(search_query: Option<&str>, vim_keys: bool) -> Line<'static>
             hint_key("Enter"),
             hint_text(" to switch · "),
             hint_key("Esc"),
-            hint_text(" for normal"),
+            hint_text(" to browse results"),
+        ]),
+        // Vim NORMAL mode with a filter committed from SEARCH mode: hjkl
+        // still moves over the filtered results; Esc clears the filter
+        // (a second Esc then quits, same as `q` always does in one).
+        (true, false, Some(query)) => Line::from(vec![
+            Span::styled(format!("Filter: {query}"), Style::default().fg(Color::Cyan)),
+            hint_text(" · "),
+            hint_key("hjkl"),
+            hint_text(" to move · "),
+            hint_key("/"),
+            hint_text(" to edit · "),
+            hint_key("Enter"),
+            hint_text(" to switch · "),
+            hint_key("Esc"),
+            hint_text(" to clear · "),
+            hint_key("q"),
+            hint_text(" to quit"),
         ]),
         // Vim NORMAL mode: hjkl/arrows move, `/` searches.
-        (true, None) => Line::from(vec![
+        (true, _, None) => Line::from(vec![
             hint_key("hjkl"),
             hint_text(" to move · "),
             hint_key("/"),
@@ -243,7 +265,7 @@ fn footer_hint_line(search_query: Option<&str>, vim_keys: bool) -> Line<'static>
             hint_key("q/Esc"),
             hint_text(" to quit"),
         ]),
-        (false, Some(query)) => Line::from(vec![
+        (false, _, Some(query)) => Line::from(vec![
             Span::styled(format!("Search: {query}"), Style::default().fg(Color::Cyan)),
             hint_text(" · type to filter · "),
             hint_key("Backspace"),
@@ -255,7 +277,7 @@ fn footer_hint_line(search_query: Option<&str>, vim_keys: bool) -> Line<'static>
             hint_key("Esc"),
             hint_text(" to clear"),
         ]),
-        (false, None) => Line::from(vec![
+        (false, _, None) => Line::from(vec![
             hint_text("type to filter · "),
             hint_key("↑/↓/←/→"),
             hint_text(" to move · "),
@@ -732,7 +754,7 @@ mod tests {
 
     #[test]
     fn footer_highlights_shortcuts_only() {
-        let line = footer_hint_line(None, false);
+        let line = footer_hint_line(None, false, false);
 
         let shortcut_spans: Vec<&Span<'_>> = line
             .spans
@@ -760,7 +782,7 @@ mod tests {
 
     #[test]
     fn search_footer_highlights_search_shortcuts() {
-        let line = footer_hint_line(Some("api"), false);
+        let line = footer_hint_line(Some("api"), false, true);
 
         let shortcut_text: Vec<&str> = line
             .spans
@@ -776,7 +798,7 @@ mod tests {
 
     #[test]
     fn vim_normal_footer_highlights_vim_shortcuts() {
-        let line = footer_hint_line(None, true);
+        let line = footer_hint_line(None, true, false);
 
         let shortcut_text: Vec<&str> = line
             .spans
@@ -790,7 +812,7 @@ mod tests {
 
     #[test]
     fn vim_search_footer_offers_return_to_normal() {
-        let line = footer_hint_line(Some("api"), true);
+        let line = footer_hint_line(Some("api"), true, true);
 
         let shortcut_text: Vec<&str> = line
             .spans
@@ -801,6 +823,21 @@ mod tests {
 
         assert_eq!(shortcut_text, vec!["Backspace", "Enter", "Esc"]);
         assert_eq!(line.spans[0].content, "Search: api");
+    }
+
+    #[test]
+    fn vim_normal_footer_with_committed_filter_offers_clear_and_edit() {
+        let line = footer_hint_line(Some("api"), true, false);
+
+        let shortcut_text: Vec<&str> = line
+            .spans
+            .iter()
+            .filter(|span| span.style.fg == Some(Color::Yellow))
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(shortcut_text, vec!["hjkl", "/", "Enter", "Esc", "q"]);
+        assert_eq!(line.spans[0].content, "Filter: api");
     }
 
     #[test]

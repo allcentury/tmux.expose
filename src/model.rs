@@ -21,6 +21,13 @@ pub struct App {
     /// When true, the picker uses modal vim navigation (hjkl to move, `/` to search).
     pub vim_keys: bool,
     search_query: Option<String>,
+    /// True while actively typing a query. In vim mode this is distinct from
+    /// `search_query` being set: Esc leaves editing (so hjkl moves again) but
+    /// keeps `search_query` as an applied filter, matching how Telescope-style
+    /// pickers commit a search into normal-mode browsing instead of discarding
+    /// it. Default mode has no normal-mode navigation to return to, so the two
+    /// always stay in lockstep there — see `is_searching`.
+    editing_search: bool,
 }
 
 impl App {
@@ -39,6 +46,7 @@ impl App {
             error: None,
             vim_keys: false,
             search_query: None,
+            editing_search: false,
         }
     }
 
@@ -63,6 +71,7 @@ impl App {
 
     pub fn start_search(&mut self) {
         self.search_query = Some(String::new());
+        self.editing_search = true;
         self.selected_index = 0;
     }
 
@@ -82,11 +91,24 @@ impl App {
 
     pub fn clear_search(&mut self) {
         self.search_query = None;
+        self.editing_search = false;
         self.selected_index = 0;
     }
 
+    /// Leaves text-entry but keeps `search_query` as an applied filter — vim
+    /// mode's Esc-while-searching, so hjkl navigates the filtered results
+    /// instead of discarding them.
+    pub fn stop_editing_search(&mut self) {
+        self.editing_search = false;
+    }
+
+    /// Whether keystrokes should be treated as search text-entry right now.
+    /// Also drives the toggle-key/typeable-filter check in `input.rs`. In
+    /// vim mode this is `false` while a filter is applied but not being
+    /// edited; in default mode it always matches `search_query.is_some()`,
+    /// since default mode has no normal-mode navigation to drop into.
     pub fn is_searching(&self) -> bool {
-        self.search_query.is_some()
+        self.editing_search
     }
 
     pub fn search_text(&self) -> Option<&str> {

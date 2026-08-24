@@ -140,7 +140,11 @@ When enabled, the picker starts in **normal** mode:
 | `q` / `Esc` | Quit |
 
 Pressing `/` enters **search** mode, where typing fuzzy-filters as usual (so `h/j/k/l`
-become text again); `Esc` returns to normal mode and `Enter` switches.
+become text again). `Esc` commits whatever you typed as a filter and drops back into
+**normal** mode — Telescope-style — so `hjkl` browses the filtered results instead of
+typing into them; `Enter` switches straight from either mode. Press `/` again to start a
+fresh search, or `Esc` a second time (from normal mode, with a filter still applied) to
+clear it. Escaping an empty query cancels instead of applying an empty filter.
 
 > **Note:** `@tmux-expose-vim-keys` works by appending `--vim` to `@tmux-expose-command`
 > (which defaults to `tmux-expose`). If you point `@tmux-expose-command` at a custom wrapper
