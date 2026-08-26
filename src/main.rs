@@ -1,10 +1,11 @@
 use std::{
     env, io,
+    process::Command,
     str::FromStr,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::{
     cursor::{Hide, Show},
@@ -14,7 +15,11 @@ use crossterm::{
 };
 use ratatui::style::Color;
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
-use tmux_expose::{input, model::App, tmux, ui};
+use tmux_expose::{
+    input,
+    model::{self, AgentStatus, App},
+    tmux, ui,
+};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Mission Control-style tmux session switcher")]
@@ -37,9 +42,23 @@ struct Cli {
     #[arg(long, value_name = "COLOR", value_parser = parse_color)]
     inactive_color: Option<Color>,
 
+    #[arg(long, value_name = "COLOR", value_parser = parse_color)]
+    attention_color: Option<Color>,
+
+    #[arg(long, value_name = "COLOR", value_parser = parse_color)]
+    waiting_color: Option<Color>,
+
+    #[arg(long, value_name = "COLOR", value_parser = parse_color)]
+    working_color: Option<Color>,
+
     /// Use modal vim navigation: hjkl to move, `/` to search, q/Esc to quit.
     #[arg(long)]
     vim: bool,
+
+    /// Keep tmux's own session order instead of sorting sessions with a
+    /// waiting agent to the top.
+    #[arg(long)]
+    no_agent_sort: bool,
 }
 
 fn parse_color(value: &str) -> Result<Color, String> {
@@ -87,13 +106,81 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// One-shot side-effecting command meant to be wired straight into an
+/// agent's own hook config (e.g. Claude Code's `settings.json`) as
+/// `tmux-expose agent-status <working|waiting|attention|clear>`. Deliberately
+/// not a clap subcommand: it never launches the TUI, so hook configs only
+/// need to know one binary name, and it can't collide with the picker's own
+/// flags.
+///
+/// Records status on the calling pane (via `$TMUX_PANE`, which tmux injects
+/// into every pane's shell — and which a hook subprocess inherits, since
+/// it's a child of that same shell) so tmux-expose can read it back later.
+fn run_agent_status(status: &str) -> Result<()> {
+    validate_agent_status_word(status)?;
+
+    let Ok(pane) = env::var("TMUX_PANE") else {
+        return Ok(()); // Not inside tmux — nothing to record.
+    };
+    if pane.is_empty() {
+        return Ok(());
+    }
+
+    if status == "clear" {
+        clear_pane_option(&pane, "@agent_status");
+        clear_pane_option(&pane, "@agent_status_since");
+    } else {
+        set_pane_option(&pane, "@agent_status", status);
+        let since = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs().to_string())
+            .unwrap_or_default();
+        set_pane_option(&pane, "@agent_status_since", &since);
+    }
+
+    Ok(())
+}
+
+fn validate_agent_status_word(status: &str) -> Result<()> {
+    if status == "clear" || AgentStatus::parse(status).is_some() {
+        return Ok(());
+    }
+    bail!("unknown agent status {status:?}; expected working, waiting, attention, or clear");
+}
+
+// A hook should never fail loudly just because tmux hiccuped — swallow the
+// result rather than propagating it.
+fn set_pane_option(pane: &str, option: &str, value: &str) {
+    let _ = Command::new("tmux")
+        .args(["set-option", "-p", "-t", pane, option, value])
+        .status();
+}
+
+fn clear_pane_option(pane: &str, option: &str) {
+    let _ = Command::new("tmux")
+        .args(["set-option", "-p", "-t", pane, "-u", option])
+        .status();
+}
+
 fn main() -> Result<()> {
+    let mut raw_args = env::args();
+    raw_args.next(); // program name
+    if raw_args.next().as_deref() == Some("agent-status") {
+        return run_agent_status(&raw_args.next().unwrap_or_default());
+    }
+
     let cli = Cli::parse();
 
     let current_session_name = tmux::current_session_name().unwrap_or(None);
     let current_session_id = tmux::current_session_id().unwrap_or(None);
+    let agent_sort = !cli.no_agent_sort;
     let mut app = match tmux::list_sessions() {
-        Ok(sessions) => App::new(sessions, current_session_name),
+        Ok(mut sessions) => {
+            if agent_sort {
+                model::sort_sessions_by_agent_status(&mut sessions);
+            }
+            App::new(sessions, current_session_name)
+        }
         Err(error) => {
             let mut app = App::new(Vec::new(), current_session_name);
             app.error = Some(format!("{error}\n\nPress q or Esc to quit."));
@@ -111,6 +198,15 @@ fn main() -> Result<()> {
     }
     if let Some(color) = cli.inactive_color {
         colors.inactive = color;
+    }
+    if let Some(color) = cli.attention_color {
+        colors.attention = color;
+    }
+    if let Some(color) = cli.waiting_color {
+        colors.waiting = color;
+    }
+    if let Some(color) = cli.working_color {
+        colors.working = color;
     }
 
     let _guard = TerminalGuard::enter()?;
@@ -182,7 +278,10 @@ fn main() -> Result<()> {
 
         if last_refresh.elapsed() >= refresh_interval {
             match tmux::list_sessions_skipping_preview_for(current_session_id.as_deref()) {
-                Ok(sessions) => {
+                Ok(mut sessions) => {
+                    if agent_sort {
+                        model::sort_sessions_by_agent_status(&mut sessions);
+                    }
                     app.replace_sessions_preserving_preview_for(
                         sessions,
                         current_session_id.as_deref(),
@@ -320,5 +419,62 @@ mod tests {
         let cli = Cli::parse_from(["tmux-expose", "--vim"]);
 
         assert!(cli.vim);
+    }
+
+    #[test]
+    fn agent_status_colors_default_to_none() {
+        let cli = Cli::parse_from(["tmux-expose"]);
+
+        assert_eq!(cli.attention_color, None);
+        assert_eq!(cli.waiting_color, None);
+        assert_eq!(cli.working_color, None);
+    }
+
+    #[test]
+    fn parses_agent_status_colors() {
+        let cli = Cli::parse_from([
+            "tmux-expose",
+            "--attention-color",
+            "red",
+            "--waiting-color",
+            "colour208",
+            "--working-color",
+            "#8be9fd",
+        ]);
+
+        assert_eq!(cli.attention_color, Some(Color::Red));
+        assert_eq!(cli.waiting_color, Some(Color::Indexed(208)));
+        assert_eq!(cli.working_color, Some(Color::Rgb(139, 233, 253)));
+    }
+
+    #[test]
+    fn agent_sort_is_on_by_default() {
+        let cli = Cli::parse_from(["tmux-expose"]);
+
+        assert!(!cli.no_agent_sort);
+    }
+
+    #[test]
+    fn parses_no_agent_sort_flag() {
+        let cli = Cli::parse_from(["tmux-expose", "--no-agent-sort"]);
+
+        assert!(cli.no_agent_sort);
+    }
+
+    #[test]
+    fn accepts_known_agent_status_words() {
+        for word in ["working", "waiting", "attention", "clear"] {
+            assert!(
+                validate_agent_status_word(word).is_ok(),
+                "{word} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_agent_status_words() {
+        assert!(validate_agent_status_word("").is_err());
+        assert!(validate_agent_status_word("done").is_err());
+        assert!(validate_agent_status_word("Waiting").is_err());
     }
 }
