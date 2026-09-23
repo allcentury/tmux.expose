@@ -177,9 +177,16 @@ fn main() -> Result<()> {
     let mut app = match tmux::list_sessions() {
         Ok(mut sessions) => {
             if agent_sort {
-                model::sort_sessions_by_agent_status(&mut sessions);
+                model::sort_sessions_by_agent_status(
+                    &mut sessions,
+                    current_session_name.as_deref(),
+                );
             }
-            App::new(sessions, current_session_name)
+            let mut app = App::new(sessions, current_session_name);
+            if agent_sort {
+                app.select_most_urgent_agent_session();
+            }
+            app
         }
         Err(error) => {
             let mut app = App::new(Vec::new(), current_session_name);
@@ -280,7 +287,10 @@ fn main() -> Result<()> {
             match tmux::list_sessions_skipping_preview_for(current_session_id.as_deref()) {
                 Ok(mut sessions) => {
                     if agent_sort {
-                        model::sort_sessions_by_agent_status(&mut sessions);
+                        model::sort_sessions_by_agent_status(
+                            &mut sessions,
+                            app.current_session_name.as_deref(),
+                        );
                     }
                     app.replace_sessions_preserving_preview_for(
                         sessions,

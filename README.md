@@ -145,7 +145,8 @@ it's idle on you. `attention` means it's blocked on something stronger, like a p
 prompt. A session's card takes the *worst* status across all of its panes (`attention` >
 `waiting` > `working`), so a multi-agent session never hides a stuck pane behind a busy
 one — and by default, sessions with a waiting or blocked agent sort to the top of the
-grid, oldest-waiting first.
+grid, oldest-waiting first, and the cursor starts on the top one instead of your current
+session.
 
 A single tracked pane gets a plain label on the card's bottom border:
 
