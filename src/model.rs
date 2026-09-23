@@ -279,6 +279,44 @@ pub fn sort_sessions_by_agent_status(sessions: &mut [Session], current_session_n
     });
 }
 
+/// Picks the session `tmux-expose next` should jump to: the next one after
+/// the current session in priority order among those whose agent is blocked
+/// on or waiting for you, wrapping around. Cycling (rather than always taking
+/// the most urgent non-current session) matters because a session you just
+/// left usually stays `waiting` — "most urgent" would bounce between the two
+/// oldest waiters and never reach a third. Returns `None` when nothing else
+/// needs you.
+pub fn next_urgent_session<'a>(
+    sessions: &'a [Session],
+    current_session_id: Option<&str>,
+) -> Option<&'a Session> {
+    let mut urgent: Vec<Session> = sessions
+        .iter()
+        .filter(|session| {
+            matches!(
+                session.agent_status,
+                Some(AgentStatus::Attention | AgentStatus::Waiting)
+            )
+        })
+        .cloned()
+        .collect();
+    // No current-session tiebreak here: the current session has to keep its
+    // natural slot so "the one after it" walks the whole list.
+    sort_sessions_by_agent_status(&mut urgent, None);
+
+    let next = match urgent
+        .iter()
+        .position(|session| Some(session.id.as_str()) == current_session_id)
+    {
+        Some(index) => &urgent[(index + 1) % urgent.len()],
+        None => urgent.first()?,
+    };
+    if Some(next.id.as_str()) == current_session_id {
+        return None;
+    }
+    sessions.iter().find(|session| session.id == next.id)
+}
+
 fn fuzzy_matches(name: &str, query: &str) -> bool {
     let query = query.to_lowercase();
     if query.is_empty() {
@@ -394,6 +432,55 @@ mod tests {
 
         let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["current", "other"]);
+    }
+
+    fn triage_sessions() -> Vec<Session> {
+        vec![
+            session_with_agent_status("idle", None, None),
+            session_with_agent_status("c", Some(AgentStatus::Waiting), Some(300)),
+            session_with_agent_status("busy", Some(AgentStatus::Working), Some(1)),
+            session_with_agent_status("a", Some(AgentStatus::Waiting), Some(100)),
+            session_with_agent_status("b", Some(AgentStatus::Waiting), Some(200)),
+        ]
+    }
+
+    fn next_name<'a>(sessions: &'a [Session], current: &str) -> Option<&'a str> {
+        next_urgent_session(sessions, Some(&format!("${current}")))
+            .map(|session| session.name.as_str())
+    }
+
+    #[test]
+    fn next_cycles_through_every_urgent_session_and_wraps() {
+        let sessions = triage_sessions();
+
+        assert_eq!(next_name(&sessions, "a"), Some("b"));
+        assert_eq!(next_name(&sessions, "b"), Some("c"));
+        assert_eq!(next_name(&sessions, "c"), Some("a"));
+    }
+
+    #[test]
+    fn next_from_a_non_urgent_session_goes_to_the_most_urgent() {
+        let mut sessions = triage_sessions();
+        sessions.push(session_with_agent_status(
+            "blocked",
+            Some(AgentStatus::Attention),
+            Some(999),
+        ));
+
+        assert_eq!(next_name(&sessions, "idle"), Some("blocked"));
+        assert_eq!(next_name(&sessions, "busy"), Some("blocked"));
+    }
+
+    #[test]
+    fn next_is_none_when_nothing_else_needs_you() {
+        let sessions = vec![
+            session_with_agent_status("only", Some(AgentStatus::Waiting), Some(1)),
+            session_with_agent_status("busy", Some(AgentStatus::Working), Some(1)),
+        ];
+
+        assert_eq!(next_name(&sessions, "only"), None);
+        assert_eq!(next_name(&sessions, "busy"), Some("only"));
+        assert_eq!(next_name(&[session("idle")], "idle"), None);
     }
 
     #[test]

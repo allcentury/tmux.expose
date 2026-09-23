@@ -238,6 +238,25 @@ set -g @tmux-expose-agent-sort 'on'
 Also available as CLI flags: `--attention-color`, `--waiting-color`, `--working-color`,
 `--no-agent-sort`.
 
+#### Jump to the next agent
+
+To triage without opening the picker, bind a key to `tmux-expose next`. Each press
+switches to the next session whose agent is blocked on or waiting for you, in the same
+priority order as the grid, and wraps around, so repeated presses visit every one of them
+instead of bouncing between the two oldest. If nothing else needs you, it shows a brief
+message and stays put.
+
+| Option | Description | Default |
+|---|---|---|
+| `@tmux-expose-next-key` | Key that jumps to the next agent session | unbound |
+| `@tmux-expose-next-key-table` | Key table for that key | `prefix` |
+
+```tmux
+set -g @tmux-expose-next-key 'N'   # <prefix> N
+```
+
+From a shell inside tmux you can also run `tmux-expose next` directly.
+
 ### Vim navigation
 
 Set `@tmux-expose-vim-keys 'on'` (or run `tmux-expose --vim`) to switch the picker to modal

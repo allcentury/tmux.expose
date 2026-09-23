@@ -18,6 +18,8 @@ working_color="$(tmux show-option -gqv @tmux-expose-working-color)"
 agent_sort="$(tmux show-option -gqv @tmux-expose-agent-sort)"
 vim_keys="$(tmux show-option -gqv @tmux-expose-vim-keys)"
 command="$(tmux show-option -gqv @tmux-expose-command)"
+next_key="$(tmux show-option -gqv @tmux-expose-next-key)"
+next_key_table="$(tmux show-option -gqv @tmux-expose-next-key-table)"
 
 if [[ -z "${key}" ]]; then
   key="M-e"
@@ -30,6 +32,13 @@ width="${width:-100%}"
 height="${height:-100%}"
 anchor="${anchor:-center}"
 command="${command:-tmux-expose}"
+next_key_table="${next_key_table:-prefix}"
+
+# `next` is a headless subcommand of the same binary, so take just the
+# program from @tmux-expose-command, before any picker flags are appended.
+# run-shell isn't attached to a client, so pass the pressing client's session
+# and name explicitly; both expand to quote-safe values ($3, /dev/ttys003).
+next_command="${command%% *} next '#{session_id}' '#{client_name}'"
 
 # Shell-escape color values before splicing them into the -E command string.
 # tmux runs that string through the shell, where an unquoted hex value such as
@@ -90,3 +99,8 @@ if [[ -n "${border_style}" ]]; then
 fi
 
 tmux bind-key -T "${key_table}" "${key}" display-popup -w "${width}" -h "${height}" "${position_args[@]}" "${style_args[@]}" -e "TMUX_EXPOSE_TOGGLE_KEY=${key}" -E "${command}"
+
+# Unbound unless @tmux-expose-next-key is set, so upgrading never takes over a key.
+if [[ -n "${next_key}" ]]; then
+  tmux bind-key -T "${next_key_table}" "${next_key}" run-shell "${next_command}"
+fi
