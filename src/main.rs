@@ -205,7 +205,7 @@ fn main() -> Result<()> {
     let mut app = match tmux::list_sessions() {
         Ok(mut sessions) => {
             if agent_sort {
-                model::sort_sessions_by_agent_status(
+                model::sort_sessions_by_agent_status_with_current(
                     &mut sessions,
                     current_session_name.as_deref(),
                 );
@@ -315,7 +315,7 @@ fn main() -> Result<()> {
             match tmux::list_sessions_skipping_preview_for(current_session_id.as_deref()) {
                 Ok(mut sessions) => {
                     if agent_sort {
-                        model::sort_sessions_by_agent_status(
+                        model::sort_sessions_by_agent_status_with_current(
                             &mut sessions,
                             app.current_session_name.as_deref(),
                         );
