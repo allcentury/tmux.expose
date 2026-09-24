@@ -35,24 +35,22 @@ anchor="${anchor:-center}"
 command="${command:-tmux-expose}"
 next_key_table="${next_key_table:-prefix}"
 
-# `next` is a headless subcommand of the same binary. @tmux-expose-command is
-# a full shell command line, and a naive split on the first space truncates a
-# quoted executable path that itself contains a space (e.g. '/opt/my
-# tools/tmux-expose' --columns 2); `eval "set --"` parses it the same way a
-# shell would, so $1 is always the real executable token regardless of
-# quoting. Safe here: this is the user's own tmux.conf setting, already
-# handed wholesale to `-E` below. @tmux-expose-binary overrides it outright,
-# for anyone who wants `next` to run a different binary than the picker.
-if [[ -z "${next_binary}" ]]; then
-  eval "set -- ${command}"
-  next_binary="${1:-tmux-expose}"
-fi
+# `next` is a headless subcommand of the same binary, so take just the
+# program from @tmux-expose-command by default. This is a plain split on the
+# first space -- never `eval`, which would execute anything else in that
+# string ($(...), ;, &&, a pipeline) as a side effect of plugin startup. The
+# tradeoff is that it can't handle a quoted executable path that itself
+# contains a space (e.g. '/opt/my tools/tmux-expose' --columns 2); set
+# @tmux-expose-binary explicitly in that case rather than relying on this to
+# parse it out.
+next_binary="${next_binary:-${command%% *}}"
 
 # run-shell isn't attached to a client, so pass the pressing client's session
-# and name explicitly. The #{q:...} modifier asks tmux to shell-quote the
-# expanded value itself, so a session/client name containing quotes or shell
-# metacharacters can't break out of the generated command.
-next_command="${next_binary} next #{q:session_id} #{q:client_name}"
+# and name explicitly. #{q:...} asks tmux to shell-quote the expanded value
+# itself, so a session/client name containing quotes or shell metacharacters
+# can't break out of the generated command. next_binary is shell-escaped for
+# the same reason -- @tmux-expose-binary may itself contain a space.
+next_command="$(printf '%q' "${next_binary}") next #{q:session_id} #{q:client_name}"
 
 # Shell-escape color values before splicing them into the -E command string.
 # tmux runs that string through the shell, where an unquoted hex value such as

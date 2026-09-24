@@ -136,13 +136,14 @@ assert_equals \
   "bind-key -T root M-e display-popup -w 100% -h 100% -e TMUX_EXPOSE_TOGGLE_KEY=M-e -E /opt/bin/tmux-expose\ --columns\ 2 bind-key -T root M-n run-shell /opt/bin/tmux-expose\ next\ #\{q:session_id\}\ #\{q:client_name\} " \
   "$(TMUX_EXPOSE_TEST_NEXT_KEY=M-n TMUX_EXPOSE_TEST_NEXT_KEY_TABLE=root TMUX_EXPOSE_TEST_COMMAND='/opt/bin/tmux-expose --columns 2' run_plugin)"
 
-# A quoted executable path containing a space in @tmux-expose-command must
-# not be truncated at the first space when deriving next's binary.
-assert_equals \
-  "bind-key -T root M-e display-popup -w 100% -h 100% -e TMUX_EXPOSE_TOGGLE_KEY=M-e -E \'/opt/my\ tools/tmux-expose\'\ --columns\ 2 bind-key -T root M-n run-shell /opt/my\ tools/tmux-expose\ next\ #\{q:session_id\}\ #\{q:client_name\} " \
-  "$(TMUX_EXPOSE_TEST_NEXT_KEY=M-n TMUX_EXPOSE_TEST_NEXT_KEY_TABLE=root TMUX_EXPOSE_TEST_COMMAND="'/opt/my tools/tmux-expose' --columns 2" run_plugin)"
-
 # @tmux-expose-binary overrides the derived executable outright.
 assert_equals \
   "bind-key -T root M-e display-popup -w 100% -h 100% -e TMUX_EXPOSE_TOGGLE_KEY=M-e -E tmux-expose bind-key -T prefix N run-shell my-custom-binary\ next\ #\{q:session_id\}\ #\{q:client_name\} " \
   "$(TMUX_EXPOSE_TEST_NEXT_KEY=N TMUX_EXPOSE_TEST_BINARY=my-custom-binary run_plugin)"
+
+# @tmux-expose-binary itself may contain a space (the case the naive split on
+# @tmux-expose-command can't handle) -- it must come out shell-quoted so
+# run-shell treats it as one word instead of two.
+assert_equals \
+  'bind-key -T root M-e display-popup -w 100% -h 100% -e TMUX_EXPOSE_TOGGLE_KEY=M-e -E tmux-expose bind-key -T root M-n run-shell /opt/my\\\ tools/tmux-expose\ next\ #\{q:session_id\}\ #\{q:client_name\} ' \
+  "$(TMUX_EXPOSE_TEST_NEXT_KEY=M-n TMUX_EXPOSE_TEST_NEXT_KEY_TABLE=root TMUX_EXPOSE_TEST_BINARY='/opt/my tools/tmux-expose' run_plugin)"
