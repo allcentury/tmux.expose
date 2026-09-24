@@ -20,6 +20,7 @@ vim_keys="$(tmux show-option -gqv @tmux-expose-vim-keys)"
 command="$(tmux show-option -gqv @tmux-expose-command)"
 next_key="$(tmux show-option -gqv @tmux-expose-next-key)"
 next_key_table="$(tmux show-option -gqv @tmux-expose-next-key-table)"
+next_binary="$(tmux show-option -gqv @tmux-expose-binary)"
 
 if [[ -z "${key}" ]]; then
   key="M-e"
@@ -34,11 +35,24 @@ anchor="${anchor:-center}"
 command="${command:-tmux-expose}"
 next_key_table="${next_key_table:-prefix}"
 
-# `next` is a headless subcommand of the same binary, so take just the
-# program from @tmux-expose-command, before any picker flags are appended.
+# `next` is a headless subcommand of the same binary. @tmux-expose-command is
+# a full shell command line, and a naive split on the first space truncates a
+# quoted executable path that itself contains a space (e.g. '/opt/my
+# tools/tmux-expose' --columns 2); `eval "set --"` parses it the same way a
+# shell would, so $1 is always the real executable token regardless of
+# quoting. Safe here: this is the user's own tmux.conf setting, already
+# handed wholesale to `-E` below. @tmux-expose-binary overrides it outright,
+# for anyone who wants `next` to run a different binary than the picker.
+if [[ -z "${next_binary}" ]]; then
+  eval "set -- ${command}"
+  next_binary="${1:-tmux-expose}"
+fi
+
 # run-shell isn't attached to a client, so pass the pressing client's session
-# and name explicitly; both expand to quote-safe values ($3, /dev/ttys003).
-next_command="${command%% *} next '#{session_id}' '#{client_name}'"
+# and name explicitly. The #{q:...} modifier asks tmux to shell-quote the
+# expanded value itself, so a session/client name containing quotes or shell
+# metacharacters can't break out of the generated command.
+next_command="${next_binary} next #{q:session_id} #{q:client_name}"
 
 # Shell-escape color values before splicing them into the -E command string.
 # tmux runs that string through the shell, where an unquoted hex value such as

@@ -250,9 +250,18 @@ message and stays put.
 |---|---|---|
 | `@tmux-expose-next-key` | Key that jumps to the next agent session | unbound |
 | `@tmux-expose-next-key-table` | Key table for that key | `prefix` |
+| `@tmux-expose-binary` | Executable `next` runs, if different from the picker | derived from `@tmux-expose-command` |
 
 ```tmux
 set -g @tmux-expose-next-key 'N'   # <prefix> N
+```
+
+`next` normally reuses the executable named in `@tmux-expose-command`. If that value quotes
+a path containing a space (e.g. `'/opt/my tools/tmux-expose' --columns 2`), set
+`@tmux-expose-binary` explicitly rather than relying on it being parsed out:
+
+```tmux
+set -g @tmux-expose-binary '/opt/my tools/tmux-expose'
 ```
 
 From a shell inside tmux you can also run `tmux-expose next` directly.
